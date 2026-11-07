@@ -32,7 +32,7 @@ const clean = s => String(s || '').slice(0, 40);
 const parse = v => { try { return typeof v === 'string' ? JSON.parse(v) : v; } catch (_) { return null; } };
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
-  const a = req.query.a; const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const a = req.query.a; let body = req.body; if (typeof body === 'string') { try { body = JSON.parse(body); } catch (_) { body = {}; } } if (!body || typeof body !== 'object') body = {};
   if (a === 'diag') { // safe troubleshooting: variable NAMES only
     const names = Object.keys(process.env).filter(k => /REDIS|KV_|UPSTASH/i.test(k)).sort();
     let ping = 'not tried'; if (MODE) { try { ping = String((await redis([['PING']]))[0]); } catch (e) { ping = 'failed: ' + e.message; } }
@@ -44,17 +44,17 @@ module.exports = async function handler(req, res) {
     if (a === 'list') { // rooms hosted from the same public IP (i.e. the same LAN)
       const [codes] = await redis([['SMEMBERS', netKey(req)]]); if (!codes || !codes.length) return res.json({ rooms: [] });
       const vals = (await redis([['MGET', ...codes.map(c => 'room:' + c)]]))[0] || [];
-      return res.json({ rooms: vals.map(parse).filter(Boolean) });
+      const now = Date.now(); return res.json({ rooms: vals.map(parse).filter(r => r && now - (r.t || 0) < 14000) }); // hide hosts that stopped checking in
     }
     if (a === 'room') { const [v] = await redis([['GET', 'room:' + clean(req.query.code).toUpperCase()]]); return res.json({ room: v ? parse(v) : null }); }
     if (a === 'host') {
       for (let k = 0; k < 6; k++) { const code = code5(); const info = { ...(body.info || {}), code, t: Date.now() };
-        const [ok] = await redis([['SET', 'room:' + code, JSON.stringify(info), 'EX', '35', 'NX']]);
+        const [ok] = await redis([['SET', 'room:' + code, JSON.stringify(info), 'EX', '20', 'NX']]);
         if (ok === 'OK') { const nk = netKey(req); await redis([['SADD', nk, code], ['EXPIRE', nk, '600']]); return res.json({ code }); } }
       return res.status(500).json({ error: 'no free code' });
     }
     if (a === 'beat') { const code = clean(body.code); const nk = netKey(req);
-      await redis([['SET', 'room:' + code, JSON.stringify({ ...(body.info || {}), code, t: Date.now() }), 'EX', '35'], ['SADD', nk, code], ['EXPIRE', nk, '600']]); return res.json({ ok: true }); }
+      await redis([['SET', 'room:' + code, JSON.stringify({ ...(body.info || {}), code, t: Date.now() }), 'EX', '20'], ['SADD', nk, code], ['EXPIRE', nk, '600']]); return res.json({ ok: true }); }
     if (a === 'close') { const code = clean(body.code); await redis([['DEL', 'room:' + code], ['SREM', netKey(req), code]]); return res.json({ ok: true }); }
     if (a === 'send') { const k = 'sig:' + clean(body.code) + ':' + clean(body.to); await redis([['RPUSH', k, JSON.stringify(body.msg || {})], ['EXPIRE', k, '120']]); return res.json({ ok: true }); }
     if (a === 'recv') { const [msgs] = await redis([['LPOP', 'sig:' + clean(req.query.code) + ':' + clean(req.query.me), '50']]); return res.json({ msgs: (msgs || []).map(parse).filter(Boolean) }); }

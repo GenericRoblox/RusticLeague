@@ -4,9 +4,9 @@ const rooms = new Map(), boxes = new Map();
 http.createServer((req, res) => {
   const u = url.parse(req.url, true); const send = (c, o) => { res.writeHead(c, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
   if (u.pathname === '/api/lobby') { let b = ''; req.on('data', d => b += d); req.on('end', () => { const body = b ? JSON.parse(b) : {}; const a = u.query.a; const now = Date.now();
-    for (const [k, r] of rooms) if (now - r.t > 35000) rooms.delete(k);
+    for (const [k, r] of rooms) if (now - r.t > 20000) rooms.delete(k);
     if (a === 'ping') return send(200, { ok: true });
-    if (a === 'list') return send(200, { rooms: [...rooms.values()] });
+    if (a === 'list') return send(200, { rooms: [...rooms.values()].filter(r => now - r.t < 14000) });
     if (a === 'room') return send(200, { room: rooms.get(String(u.query.code).toUpperCase()) || null });
     if (a === 'host') { const code = Math.random().toString(36).slice(2, 7).toUpperCase(); rooms.set(code, { ...(body.info || {}), code, t: now }); return send(200, { code }); }
     if (a === 'beat') { rooms.set(body.code, { ...(body.info || {}), code: body.code, t: now }); return send(200, { ok: true }); }
