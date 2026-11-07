@@ -54,8 +54,9 @@ module.exports = async function handler(req, res) {
       return res.status(500).json({ error: 'no free code' });
     }
     if (a === 'beat') { const code = clean(body.code); const nk = netKey(req);
+      const [closed] = await redis([['GET', 'closed:' + code]]); if (closed) return res.json({ ok: false, closed: true }); // a late heartbeat must never revive a closed room
       await redis([['SET', 'room:' + code, JSON.stringify({ ...(body.info || {}), code, t: Date.now() }), 'EX', '20'], ['SADD', nk, code], ['EXPIRE', nk, '600']]); return res.json({ ok: true }); }
-    if (a === 'close') { const code = clean(body.code); await redis([['DEL', 'room:' + code], ['SREM', netKey(req), code]]); return res.json({ ok: true }); }
+    if (a === 'close') { const code = clean(body.code); await redis([['SET', 'closed:' + code, '1', 'EX', '300'], ['DEL', 'room:' + code], ['SREM', netKey(req), code]]); return res.json({ ok: true }); }
     if (a === 'send') { const k = 'sig:' + clean(body.code) + ':' + clean(body.to); await redis([['RPUSH', k, JSON.stringify(body.msg || {})], ['EXPIRE', k, '120']]); return res.json({ ok: true }); }
     if (a === 'recv') { const [msgs] = await redis([['LPOP', 'sig:' + clean(req.query.code) + ':' + clean(req.query.me), '50']]); return res.json({ msgs: (msgs || []).map(parse).filter(Boolean) }); }
     return res.status(400).json({ error: 'unknown action' });

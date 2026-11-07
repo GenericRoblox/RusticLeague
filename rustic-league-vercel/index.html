@@ -374,7 +374,7 @@ class Host {
     this.pollT = setInterval(() => this.poll(), 1200); this.beatT = setInterval(() => this.beat(), 6000); return this.code;
   }
   setInfo(info) { this.info = info; }
-  beat() { if (this.code) api('beat', { code: this.code, info: this.info }).catch(() => {}); }
+  beat() { if (!this.code || this.closed) return; api('beat', { code: this.code, info: this.info }).then(r => { if (r && r.closed) { this.closed = true; clearInterval(this.beatT); } }).catch(() => {}); }
   async poll() {
     if (this.polling || this.closed) return; this.polling = true;
     try { const { msgs } = await api('recv', null, '&code=' + this.code + '&me=host'); for (const m of msgs) await this.signal(m); } catch (_) { }
@@ -3142,7 +3142,7 @@ const paintCache = new Map();
 // full-resolution paint jobs wait until any setup in progress is finished, so they never hold up the quick coats
 const hiJobs = []; let holdHi = 0;
 function laterHi(job) { hiJobs.push(job); flushHi(); }
-function flushHi() { if (holdHi > 0) return; while (hiJobs.length) hiJobs.shift()(); }
+function flushHi() { if (holdHi > 0) return; if (!Pool.n && state !== 'menu') { setTimeout(flushHi, 2000); return; } while (hiJobs.length) hiJobs.shift()(); }
 // ---------- match setup: sim, bots, car models ----------
 const ALL_CARS = ['coupe', 'van', 'buggy'];
 const pick = a => a[Math.floor(Math.random() * a.length)];
@@ -3344,7 +3344,11 @@ async function startMatch(comp) {
   if (MP.role !== 'client') assignLevels();
   const mp = mpActive(); $('rematchBtn').classList.toggle('hidden', mp); $('restartBtn').classList.toggle('hidden', mp); $('pauseSetBtn').classList.toggle('hidden', mp); $('leaveMpBtn').classList.toggle('hidden', !mp); $('toLobbyBtn').classList.toggle('hidden', MP.role !== 'host'); match.score = [0, 0]; match.time = matchMode === 'timed' ? 300 : 0; match.overtime = false; match.elapsed = 0; match.stats = [{ hits: 0, pads: 0, top: 0 }, { hits: 0, pads: 0, top: 0 }];
   setPanel(null); show('menu', false); show('playerbar', false); show('hud', true); show('end', false); show('pause', false); updateHudNames(); updateScore(); hintT = 9; show('hint', true); $('camtag').textContent = ballcam ? 'Ball cam' : 'Car cam';
-  skidCtx.clearRect(0, 0, 512, SKH); skidTex.update(); kickVariant = 0; if (MP.role === 'client') { state = 'countdown'; stateT = 0; ballMesh.setEnabled(true); camState.init = false; } else kickoff(); canvas.focus();
+  skidCtx.clearRect(0, 0, 512, SKH); skidTex.update(); kickVariant = 0;
+  if (MP.role === 'client') { state = 'waiting'; stateT = 0; ballMesh.setEnabled(true); camState.init = false; MP.net.send({ t: 'ready' }); } // tell the host we're loaded
+  else if (MP.role === 'host' && MP.inMatch) { kickoff(); state = 'waiting'; stateT = 0; waitForPlayers().then(() => { if (MP.inMatch && state === 'waiting') { state = 'countdown'; stateT = 0; } }); }
+  else kickoff();
+  canvas.focus();
 }
 function kickoff() {
   sim.resetKickoff(kickVariant++); sim.passInfos = {}; sim.cars.forEach(c => c.frozen = true); bots.forEach(b => b && b.onKickoff()); state = 'countdown'; stateT = 0; timeScale = 1; ballMesh.setEnabled(true); lastSkid.forEach(a => a.fill(null));
@@ -3393,7 +3397,7 @@ function activeStack() { if (!$('pause').classList.contains('hidden')) return $(
 function moveFocus(d) { const list = [...activeStack().querySelectorAll('button.slab')]; if (!list.length) return; let i = list.indexOf(document.activeElement); if (i < 0) i = list.findIndex(b => b.classList.contains('sel')); i = (i + d + list.length) % list.length; list.forEach(b => b.classList.toggle('sel', b === list[i])); list[i].focus(); AU.click(); }
 $('mainnav').addEventListener('focusin', e => { const b = e.target.closest('.slab'); if (b) $('mainnav').querySelectorAll('.slab').forEach(x => x.classList.toggle('sel', x === b)); });
 window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; if (state === 'play' || state === 'countdown') setPause(true); });
-document.addEventListener('visibilitychange', () => { if (document.hidden && (state === 'play' || state === 'countdown')) setPause(true); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && MP.role === 'client' && MP.inMatch && MP.net) MP.net.send({ t: 'i', a: [0, 0, 0] }); if (document.hidden && (state === 'play' || state === 'countdown')) setPause(true); });
 let padPrev = {}, padNav = {};
 function pollMenuPad() { const gp = [...(navigator.getGamepads ? navigator.getGamepads() : [])].find(g => g); if (!gp) return; const b = i => !!gp.buttons[i]?.pressed; const now = { up: b(12) || gp.axes[1] < -0.6, dn: b(13) || gp.axes[1] > 0.6, a: b(0), back: b(1) };
   if (now.up && !padNav.up) moveFocus(-1); if (now.dn && !padNav.dn) moveFocus(1); if (now.a && !padNav.a && document.activeElement && document.activeElement.tagName === 'BUTTON') document.activeElement.click(); if (now.back && !padNav.back && menuPanel) closePanel(); if (b(9) && !padNav.st && paused && !menuPanel) setPause(false); now.st = b(9); padNav = now; }
@@ -3605,7 +3609,7 @@ function stepSim(dt) {
   acc += dt * timeScale; let n = 0;
   while (acc >= sim.dt && n < 12) {
     const pIn = readInput();
-    sim.step(sim.cars.map((c, i) => { if (i === meIdx) return pIn; const h = MP.humans[i]; if (h != null) { const a = MP.inputs[h]; return a ? { throttle: a[0], steer: a[1], handbrake: !!a[2] } : null; } return bots[i] ? bots[i].update(sim.dt) : null; })); acc -= sim.dt; n++;
+    sim.step(sim.cars.map((c, i) => { if (i === meIdx) return pIn; const h = MP.humans[i]; if (h != null) { const a = (performance.now() - (MP.inputsT[h] || 0) < 600) ? MP.inputs[h] : null; return a ? { throttle: a[0], steer: a[1], handbrake: !!a[2] } : null; } return bots[i] ? bots[i].update(sim.dt) : null; })); acc -= sim.dt; n++;
     if (state === 'play') { const g = sim.goalCheck(); if (g >= 0) onGoal(g); }
     handleEvents();
   }
@@ -3627,7 +3631,7 @@ function update(dt) {
   world.fan.rotation.z += dt * 0.9;
   if (paused || state === 'end') { if (state === 'end') gameCamera(dt, cars3d[meIdx], ballMesh.position); return; }
   if (MP.role === 'client' && MP.inMatch) { // play back the host's snapshots
-    const pIn = readInput(); MP.net.send({ t: 'i', a: [+pIn.throttle.toFixed(2), +pIn.steer.toFixed(2), pIn.handbrake ? 1 : 0] }, true);
+    const pIn = document.hidden ? { throttle: 0, steer: 0, handbrake: false } : readInput(); MP.net.send({ t: 'i', a: [+pIn.throttle.toFixed(2), +pIn.steer.toFixed(2), pIn.handbrake ? 1 : 0] }, true);
     const a = Math.min(1, (performance.now() - MP.snapT) / (1000 / 30)); syncVisuals(a, dt); gameCamera(dt, cars3d[meIdx], ballMesh.position); hud(); return; }
   if (hintT > 0) { hintT -= dt; if (hintT <= 0) show('hint', false); }
   if (state === 'countdown') {
@@ -3662,12 +3666,16 @@ engine.runRenderLoop(() => { const dt = Math.min(engine.getDeltaTime() / 1000, 0
 // 30 Hz snapshots over WebRTC. Lobby: two teams, A/D to switch, bots fill empty seats, host picks the rules and colours.
 const TEAM_COLORS = [['#2f6fd6', 'Blue'], ['#d23a2f', 'Red'], ['#e0a020', 'Amber'], ['#2e9e57', 'Green'], ['#8a4fd0', 'Purple'], ['#e06a1f', 'Orange'], ['#1fb5b5', 'Teal'], ['#d8d2c0', 'Cream'], ['#3a3a3a', 'Black']];
 const colorName = hex => (TEAM_COLORS.find(c => c[0] === hex) || ['', 'Team'])[1];
-const MP = { role: null, net: null, lobby: null, myId: 'host', humans: {}, inputs: {}, inMatch: false, snapAcc: 0, evq: [], snapT: 0, lastSnap: null };
+const MP = { role: null, net: null, lobby: null, myId: 'host', humans: {}, inputs: {}, inputsT: {}, ready: new Set(), inMatch: false, snapAcc: 0, evq: [], snapT: 0, lastSnap: null };
 const mpActive = () => !!MP.role;
 const mpHuman = () => MP.lobby ? MP.lobby.players.find(p => p.id === MP.myId) : null;
 const teamHumans = (L, t) => L.players.filter(p => p.team === t);
 function lobbyMsg(t) { $('lobMsg').textContent = t || ''; }
+let warmKey = '';
+function warmLobbyPaints() { const L = MP.lobby; if (!L) return; const k = L.colors.join(); if (k === warmKey) return; warmKey = k;
+  for (const hex of L.colors) for (const ty of ALL_CARS) { const key = 'lo:' + ty + hex; if (!TX[key]) Promise.resolve(Pool.run('carAtlas', [CAR_LO, hex, false, ty], AFF[ty])).then(t => { TX[key] = t; }).catch(() => {}); } }
 function renderLobby() {
+  warmLobbyPaints();
   const L = MP.lobby; if (!L) return; const host = MP.role === 'host', me = mpHuman();
   $('lobCode').textContent = MP.code || '-----';
   document.querySelectorAll('#lobby .hostonly').forEach(e => e.classList.toggle('hidden-role', !host));
@@ -3713,7 +3721,7 @@ async function hostGame() {
       rejectReason: () => MP.inMatch ? 'started' : 'full',
       onJoin: peer => { const L = MP.lobby; L.players = L.players.filter(p => p.id !== peer.id); const t = teamHumans(L, 0).length <= teamHumans(L, 1).length ? 0 : 1; L.players.push({ id: peer.id, name: String(peer.name || 'Driver').slice(0, 16), car: 'coupe', team: L.teamSize === 1 ? 1 - L.players[0].team : t }); AU.click(); hostSync(); },
       onLeave: id => mpPlayerLeft(id),
-      onMsg: (id, m) => { if (m.t === 'req') hostRequest(id, m); else if (m.t === 'i') MP.inputs[id] = m.a; else if (m.t === 'bye') MP.net.drop(id); else if (m.t === 'me') { const p = MP.lobby.players.find(x => x.id === id); if (p) { p.name = String(m.name || p.name).slice(0, 16); if (CAR_INFO[m.car]) p.car = m.car; hostSync(); } } },
+      onMsg: (id, m) => { if (m.t === 'req') hostRequest(id, m); else if (m.t === 'i') { MP.inputs[id] = m.a; MP.inputsT[id] = performance.now(); } else if (m.t === 'ready') { if (MP.ready) MP.ready.add(id); } else if (m.t === 'bye') MP.net.drop(id); else if (m.t === 'me') { const p = MP.lobby.players.find(x => x.id === id); if (p) { p.name = String(m.name || p.name).slice(0, 16); if (CAR_INFO[m.car]) p.car = m.car; hostSync(); } } },
     });
     lanMsg('Opening the lobby…'); MP.code = await MP.net.open(roomInfo()); showLobby(true); lobbyMsg('Share the room code, or friends on your network will see the game listed.');
   } catch (e) { mpReset(); lanMsg('Could not host: ' + e.message); }
@@ -3742,7 +3750,7 @@ function mpPlayerLeft(id) {
   if (MP.inMatch) for (const k in MP.humans) if (MP.humans[k] === id) { delete MP.humans[k]; const i = +k; bots[i] = new RLBot.Bot(sim, i, MP.lobby.difficulty, 'allrounder'); bots[i].onKickoff(); }
   hostSync();
 }
-function mpReset() { try { MP.net && MP.net.close(); } catch (_) { } Object.assign(MP, { role: null, net: null, lobby: null, myId: 'host', humans: {}, inputs: {}, inMatch: false, code: null }); meIdx = 0; }
+function mpReset() { try { MP.net && MP.net.close(); } catch (_) { } Object.assign(MP, { role: null, net: null, lobby: null, myId: 'host', humans: {}, inputs: {}, inputsT: {}, ready: new Set(), inMatch: false, code: null }); meIdx = 0; }
 function mpLost(msg) { if (!MP.role) return; mpReset(); show('lobby', false); show('pause', false); show('end', false); toMenu(); restoreSolo(); setPanel('lan'); lanMsg(msg); }
 function restoreSolo() { matchKey = ''; setGoalColor(0, PAINTS[profile.paint][0]); setGoalColor(1, PAINTS[botPaintKey][0]); setupMatch(settings.teamSize || 1, true).then(() => sim && sim.resetKickoff(0)); }
 function leaveMP() { mpReset(); show('lobby', false); toMenu(); restoreSolo(); }
@@ -3755,7 +3763,15 @@ function buildComp() {
     cars.forEach((c, k) => { const i = t * n + k; types[i] = c; styles[i] = st[k]; if (hs[k]) humans[i] = hs[k].id; }); }
   return { n, types, humans, styles, colors: [...L.colors], mode: L.mode, difficulty: L.difficulty, lighting: L.lighting, names: Object.fromEntries(L.players.map(p => [p.id, p.name])) };
 }
+// the host holds the countdown until every player's browser has finished loading the match (max 25 s)
+function waitForPlayers() {
+  const need = () => Object.values(MP.humans).filter(id => id !== 'host' && MP.net.peers.has(id) && !MP.ready.has(id));
+  if (!need().length) return Promise.resolve();
+  fx('banner', 'Waiting for players…<small>Getting everyone loaded</small>', 0);
+  return new Promise(res => { const t0 = performance.now(); const iv = setInterval(() => { if (!need().length || performance.now() - t0 > 25000 || !MP.inMatch) { clearInterval(iv); fx('banner', '', 1); res(); } }, 150); });
+}
 async function startMatchMP(comp) {
+  MP.ready = new Set();
   MP.inMatch = true; MP.humans = comp.humans; MP.colors = comp.colors; MP.comp = comp; show('lobby', false);
   const myK = Object.keys(comp.humans).find(k => comp.humans[k] === MP.myId);
   if (myK == null) { mpLost('You weren\'t in that match\'s line-up. Rejoin the lobby to play.'); return; }
