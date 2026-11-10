@@ -1,6 +1,0 @@
-const S=require('../src/sim.js'); const {Bot}=require('../src/bot.js'); const {Sim,V,len,qrot,qconj,sub}=S; const f=n=>n.toFixed(1);
-const K=+process.argv[2]; let seed=5; const r=()=>{seed=(seed*16807)%2147483647; return seed/2147483647;};
-for(let k=0;k<=K;k++){ const sim=new Sim({teamSize:1}); const b=new Bot(sim,0,'legend'); b.mode='attack';
- sim.placeCar(sim.cars[1],V(-34,0,70),0); sim.cars[1].frozen=true; const bx=(r()-0.5)*50, bz=-60+r()*55; sim.ball.pos=V(bx,1.56,bz); sim.placeCar(sim.cars[0],V(bx+(r()-0.5)*20,0,bz-12-r()*10),(r()-0.5)*1.2); if(k<K) continue;
- let t=0,nl=0; while(t<(+process.argv[3]||10)){ const inp=b.update(sim.dt); sim.step([inp,{}]); t+=sim.dt; const c=sim.cars[0]; let hit=false; for(const e of sim.events) if(e.type==='ballHit') hit=true; sim.events.length=0;
-  if(t>nl||hit){ nl+=0.5; const lb=qrot(qconj(c.q),sub(sim.ball.pos,c.pos)); const fw=c.forward(); console.log(`t=${f(t)}${hit?'*':' '}${b.mode.padEnd(7)} car(${f(c.pos.x)},${f(c.pos.z)}) hdg=${f(Math.atan2(fw.x,fw.z)*57)} s=${f(c.speed())} ballLocal(${f(lb.x)},${f(lb.z)}) bv=(${f(sim.ball.vel.x)},${f(sim.ball.vel.z)}) shot=(${f(b.shotDir?b.shotDir.x:0)},${f(b.shotDir?b.shotDir.z:0)}) thr=${f(inp.throttle)} st=${f(inp.steer)} [${b.dbg}]`);} if(sim.goalCheck()>=0){console.log('GOAL');break;} } }
