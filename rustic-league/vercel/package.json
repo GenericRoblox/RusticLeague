@@ -1,0 +1,14 @@
+{
+  "name": "rustic-league",
+  "private": true,
+  "description": "Rustic League: rusty-car soccer in the browser, with LAN parties",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node dev-server.js"
+  },
+  "dependencies": {
+    "redis": "^6.3.0"
+  }
+}
